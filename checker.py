@@ -119,7 +119,7 @@ async def _run_with_browser(callback):
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-                "--single-process",
+                "--disable-software-rasterizer",
             ],
         )
         logger.info("[browser] Chromium launched in %.1fs", time.monotonic() - t0)
