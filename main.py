@@ -1,5 +1,8 @@
 import asyncio
 import logging
+from datetime import datetime
+
+from telegram.constants import ParseMode
 
 from bot import create_bot
 from config import TELEGRAM_CHAT_ID, CHECK_INTERVAL
@@ -11,6 +14,8 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+START_TIME = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
 
 async def post_init(app):
@@ -25,9 +30,16 @@ async def post_init(app):
             "Auto-started monitoring (chat_id=%s, interval=%ds)",
             TELEGRAM_CHAT_ID, CHECK_INTERVAL,
         )
+        interval_min = CHECK_INTERVAL // 60
         await app.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
-            text="🟢 Бот запущен, мониторинг активен!",
+            text=(
+                f"🔄 <b>Бот обновлён и перезапущен</b>\n\n"
+                f"⏰ {START_TIME}\n"
+                f"📡 Мониторинг активен (каждые {interval_min} мин)\n"
+                f"🎯 Ersterteilung/Erweiterung"
+            ),
+            parse_mode=ParseMode.HTML,
         )
 
 

@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 monitoring_task: asyncio.Task | None = None
 is_monitoring = False
 check_count = 0
+error_count = 0
 last_check_time: str = "—"
 last_found_dates: set = set()  # avoid duplicate alerts
 
@@ -142,7 +143,7 @@ def _get_check_interval() -> int:
 
 
 async def monitor_loop(app: Application):
-    global is_monitoring, check_count, last_check_time, last_found_dates
+    global is_monitoring, check_count, error_count, last_check_time, last_found_dates
     chat_id = TELEGRAM_CHAT_ID
 
     while is_monitoring:
@@ -152,12 +153,11 @@ async def monitor_loop(app: Application):
             last_check_time = datetime.now().strftime("%H:%M:%S")
 
             if result["available_dates"]:
-                # Build set of current dates to detect new ones
+                error_count = 0
                 current_dates = {f"{d['day']}.{d['month']}" for d in result["available_dates"]}
                 new_dates = current_dates - last_found_dates
 
                 if new_dates:
-                    # New dates appeared → send alert
                     last_found_dates = current_dates
                     dates_text = format_dates_html(result["available_dates"])
                     n = len(result["available_dates"])
@@ -179,13 +179,19 @@ async def monitor_loop(app: Application):
                     logger.info("ALERT SENT! %d dates (%d new)", n, len(new_dates))
                 else:
                     logger.info("Same dates still available, no new alert")
+            elif result["error"]:
+                error_count += 1
+                logger.warning("Check error (#%d): %s", error_count, result["error"])
+                if error_count == 5:
+                    await app.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"⚠️ 5 ошибок подряд: {result['error']}",
+                    )
             else:
+                error_count = 0
                 if last_found_dates:
-                    last_found_dates.clear()  # reset when dates disappear
-                if result["error"]:
-                    logger.warning("Check error: %s", result["error"])
-                else:
-                    logger.info("No dates [check #%d at %s]", check_count, last_check_time)
+                    last_found_dates.clear()
+                logger.info("No dates [check #%d at %s]", check_count, last_check_time)
 
         except Exception as e:
             logger.error("Monitor error: %s", e, exc_info=True)
@@ -258,10 +264,20 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Режим: {mode}\n"
         f"Интервал: {interval} сек\n"
         f"Проверок: {check_count}\n"
+        f"Ошибок подряд: {error_count}\n"
         f"Последняя: {last_check_time}\n"
         f"Время: {now}",
         parse_mode=ParseMode.HTML,
     )
+
+
+async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Suppress 409 Conflict errors during deploy transitions."""
+    from telegram.error import Conflict
+    if isinstance(context.error, Conflict):
+        logger.debug("Conflict (another instance), ignoring")
+        return
+    logger.error("Unhandled error: %s", context.error, exc_info=context.error)
 
 
 def create_bot() -> Application:
@@ -273,4 +289,5 @@ def create_bot() -> Application:
     app.add_handler(CommandHandler("stop", cmd_stop))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("info", cmd_info))
+    app.add_error_handler(_error_handler)
     return app
