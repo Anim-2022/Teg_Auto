@@ -4,7 +4,7 @@ import logging.handlers
 from collections import deque
 from datetime import datetime
 
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.constants import ParseMode
 
@@ -336,6 +336,17 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
         logger.debug("Conflict (another instance), ignoring")
         return
     logger.error("Unhandled error: %s", context.error, exc_info=context.error)
+
+
+BOT_COMMANDS = [
+    BotCommand("check", "🔍 Разовая проверка"),
+    BotCommand("calendar", "📸 Скриншот календаря"),
+    BotCommand("monitor", "▶️ Запустить мониторинг"),
+    BotCommand("stop", "⏹ Остановить мониторинг"),
+    BotCommand("status", "📊 Текущее состояние"),
+    BotCommand("logs", "📋 Последние логи"),
+    BotCommand("info", "ℹ️ Как работает бот"),
+]
 
 
 def create_bot() -> Application:

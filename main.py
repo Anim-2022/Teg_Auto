@@ -6,6 +6,7 @@ from telegram.constants import ParseMode
 
 from bot import create_bot
 from config import TELEGRAM_CHAT_ID, CHECK_INTERVAL
+from bot import BOT_COMMANDS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,6 +21,10 @@ START_TIME = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
 async def post_init(app):
     """Auto-start monitoring after bot launches (for deploy)."""
+    # Set command menu for phone/desktop
+    await app.bot.set_my_commands(BOT_COMMANDS)
+    logger.info("Bot menu commands registered")
+
     if TELEGRAM_CHAT_ID:
         import bot as bot_module
         bot_module.is_monitoring = True
