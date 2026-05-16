@@ -95,12 +95,28 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def _make_progress_updater(msg):
+    """Create a progress callback that edits a Telegram message."""
+    last_text = [None]
+
+    async def _update(text):
+        if text != last_text[0]:
+            last_text[0] = text
+            try:
+                await msg.edit_text(text)
+            except Exception:
+                pass  # ignore edit errors (rate limits, same text, etc.)
+
+    return _update
+
+
 async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("📸 Делаю скриншот календаря...")
+    msg = await update.message.reply_text("📸 Запускаю браузер...")
     logger.info("[cmd] /calendar from user %s", update.effective_user.id)
+    progress = await _make_progress_updater(msg)
 
     try:
-        result = await screenshot_calendar()
+        result = await screenshot_calendar(on_progress=progress)
     except Exception as e:
         logger.error("[cmd] /calendar crashed: %s", e, exc_info=True)
         await msg.edit_text(f"❌ Крах: {type(e).__name__}: {e}")
@@ -116,6 +132,7 @@ async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
+        await msg.edit_text("📤 Отправляю фото...")
         with open(result["path"], "rb") as photo:
             now = datetime.now().strftime('%d.%m.%Y %H:%M')
             await update.message.reply_photo(
@@ -131,11 +148,12 @@ async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🔍 Проверяю сайт...")
+    msg = await update.message.reply_text("🔍 Запускаю проверку...")
     logger.info("[cmd] /check from user %s", update.effective_user.id)
+    progress = await _make_progress_updater(msg)
 
     try:
-        result = await check_available_dates()
+        result = await check_available_dates(on_progress=progress)
     except Exception as e:
         logger.error("[cmd] /check crashed: %s", e, exc_info=True)
         await msg.edit_text(f"❌ Крах: {type(e).__name__}: {e}")

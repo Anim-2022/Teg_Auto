@@ -9,12 +9,21 @@ from config import TARGET_URL, HEADLESS, TIMEOUT
 
 logger = logging.getLogger(__name__)
 
+# Type for progress callback: async def(text: str) -> None
+ProgressCallback = None  # just for docs
 
-async def _navigate_to_calendar(page: Page) -> Frame | None:
+
+async def _navigate_to_calendar(page: Page, on_progress=None) -> Frame | None:
     """Navigate through the form to the calendar page. Returns the iframe Frame or None."""
     step = "cookie_consent"
+
+    async def _progress(text):
+        if on_progress:
+            await on_progress(text)
+
     try:
         # Step 1: Cookie consent
+        await _progress("🍪 Закрываю cookie-баннер...")
         try:
             cookie_btn = page.locator("text=Das ist ok")
             if await cookie_btn.is_visible(timeout=3000):
@@ -28,6 +37,7 @@ async def _navigate_to_calendar(page: Page) -> Frame | None:
 
         # Step 2: Find tempus-termine iframe
         step = "find_iframe"
+        await _progress("🔍 Ищу форму записи (iframe)...")
         frame = None
         all_frames = page.frames
         logger.info("[nav] Total frames on page: %d", len(all_frames))
@@ -44,6 +54,7 @@ async def _navigate_to_calendar(page: Page) -> Frame | None:
 
         # Step 3: Select service
         step = "select_service"
+        await _progress("📋 Выбираю: Ersterteilung/Erweiterung...")
         select_el = frame.locator("#ErtErw-788-mittermin")
         if await select_el.count() == 0:
             logger.error("[nav] FAIL: #ErtErw-788-mittermin not found in iframe")
@@ -54,6 +65,7 @@ async def _navigate_to_calendar(page: Page) -> Frame | None:
 
         # Step 4: Check privacy checkbox
         step = "check_privacy"
+        await _progress("✅ Принимаю Datenschutz...")
         checkbox = frame.locator("#chkDatenschutz")
         if await checkbox.count() == 0:
             logger.error("[nav] FAIL: #chkDatenschutz not found in iframe")
@@ -64,12 +76,14 @@ async def _navigate_to_calendar(page: Page) -> Frame | None:
 
         # Step 5: Submit form
         step = "submit_form"
+        await _progress("🚀 Жму «Weiter zur Terminauswahl»...")
         submit_btn = frame.locator("input[type='submit'][value='Weiter zur Terminauswahl »']")
         if await submit_btn.count() == 0:
             logger.error("[nav] FAIL: Submit button not found in iframe")
             return None
         await submit_btn.click()
         logger.info("[nav] Form submitted, waiting 5s for calendar...")
+        await _progress("⏳ Жду загрузки календаря...")
         await page.wait_for_timeout(5000)
 
         # Step 6: Re-find iframe after navigation
@@ -168,20 +182,28 @@ async def _run_with_browser(callback):
         logger.info("[browser] Cleanup done (%.1fs total)", time.monotonic() - t0)
 
 
-async def check_available_dates() -> dict:
+async def check_available_dates(on_progress=None) -> dict:
     """Check for available appointment dates. Returns dict with available_dates and error."""
     result = {"available_dates": [], "error": None}
 
+    async def _progress(text):
+        if on_progress:
+            await on_progress(text)
+
     async def _do_check(page):
         logger.info("[check] Opening %s", TARGET_URL)
-        await page.goto(TARGET_URL, wait_until="networkidle")
+        await _progress("🌐 Открываю сайт Gelsenkirchen...")
+        await page.goto(TARGET_URL, wait_until="domcontentloaded")
+        # Wait for iframe to appear
+        await page.wait_for_timeout(3000)
         logger.info("[check] Page loaded, navigating to calendar...")
 
-        frame = await _navigate_to_calendar(page)
+        frame = await _navigate_to_calendar(page, on_progress)
         if not frame:
             result["error"] = "Не удалось открыть календарь (iframe или форма не найдены)"
             return result
 
+        await _progress("📅 Сканирую календарь...")
         result["available_dates"] = await _parse_dates(frame)
         if result["available_dates"]:
             logger.info("[check] FOUND %d available slots!", len(result["available_dates"]))
@@ -203,20 +225,27 @@ async def check_available_dates() -> dict:
 SCREENSHOT_PATH = "calendar_screenshot.png"
 
 
-async def screenshot_calendar() -> dict:
+async def screenshot_calendar(on_progress=None) -> dict:
     """Take a screenshot of just the calendar area. Returns dict with path and error."""
     result = {"path": None, "error": None}
 
+    async def _progress(text):
+        if on_progress:
+            await on_progress(text)
+
     async def _do_screenshot(page):
         logger.info("[screenshot] Opening %s", TARGET_URL)
-        await page.goto(TARGET_URL, wait_until="networkidle")
+        await _progress("🌐 Открываю сайт Gelsenkirchen...")
+        await page.goto(TARGET_URL, wait_until="domcontentloaded")
+        await page.wait_for_timeout(3000)
         logger.info("[screenshot] Page loaded, navigating to calendar...")
 
-        frame = await _navigate_to_calendar(page)
+        frame = await _navigate_to_calendar(page, on_progress)
         if not frame:
             result["error"] = "Не удалось открыть календарь (iframe или форма не найдены)"
             return result
 
+        await _progress("📸 Делаю скриншот...")
         logger.info("[screenshot] Looking for #menu_container...")
         calendar_el = frame.locator("#menu_container")
         if await calendar_el.count() == 0:
@@ -224,7 +253,6 @@ async def screenshot_calendar() -> dict:
             calendar_el = frame.locator("#body_container")
             if await calendar_el.count() == 0:
                 logger.error("[screenshot] Neither #menu_container nor #body_container found")
-                # Fallback: screenshot entire frame
                 logger.info("[screenshot] Falling back to full page screenshot")
                 await page.screenshot(path=SCREENSHOT_PATH, full_page=True)
                 result["path"] = SCREENSHOT_PATH
