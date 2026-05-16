@@ -1,0 +1,16 @@
+app = "termin-monitor-ge"
+primary_region = "fra"
+
+[build]
+
+[env]
+  PYTHONUNBUFFERED = "1"
+
+[processes]
+  bot = "python main.py"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+
