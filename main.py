@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram.constants import ParseMode
 
@@ -16,7 +17,8 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-START_TIME = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+BERLIN = ZoneInfo("Europe/Berlin")
+START_TIME = datetime.now(BERLIN).strftime("%d.%m.%Y %H:%M:%S")
 
 
 async def post_init(app):

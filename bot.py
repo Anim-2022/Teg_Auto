@@ -3,6 +3,7 @@ import logging
 import logging.handlers
 from collections import deque
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
@@ -40,6 +41,8 @@ check_count = 0
 error_count = 0
 last_check_time: str = "—"
 last_found_dates: set = set()  # avoid duplicate alerts
+
+BERLIN = ZoneInfo("Europe/Berlin")
 
 
 CLOSE_KB = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Закрыть", callback_data="close")]])
@@ -148,7 +151,7 @@ async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await msg.edit_text("📤 Отправляю фото...")
         with open(result["path"], "rb") as photo:
-            now = datetime.now().strftime('%d.%m.%Y %H:%M')
+            now = datetime.now(BERLIN).strftime('%d.%m.%Y %H:%M')
             await update.message.reply_photo(
                 photo=photo,
                 caption=f"📅 Календарь на {now}",
@@ -186,7 +189,7 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=CLOSE_KB,
         )
     else:
-        now = datetime.now().strftime('%H:%M:%S')
+        now = datetime.now(BERLIN).strftime('%H:%M:%S')
         await msg.edit_text(
             f"🔴 Свободных дат нет\n\n"
             f"⏰ Проверено: {now}\n"
@@ -197,7 +200,7 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def _get_check_interval() -> int:
     """Smart interval: aggressive in the morning, normal during day, paused at night."""
-    now = datetime.now()
+    now = datetime.now(BERLIN)
     hour = now.hour
     weekday = now.weekday()  # 0=Mon
 
@@ -225,7 +228,7 @@ async def monitor_loop(app: Application):
         try:
             result = await check_available_dates()
             check_count += 1
-            last_check_time = datetime.now().strftime("%H:%M:%S")
+            last_check_time = datetime.now(BERLIN).strftime("%H:%M:%S")
 
             if result["available_dates"]:
                 error_count = 0
@@ -236,7 +239,7 @@ async def monitor_loop(app: Application):
                     last_found_dates = current_dates
                     dates_text = format_dates_html(result["available_dates"])
                     n = len(result["available_dates"])
-                    now_str = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+                    now_str = datetime.now(BERLIN).strftime('%d.%m.%Y %H:%M:%S')
                     await app.bot.send_message(
                         chat_id=chat_id,
                         text=(
@@ -324,8 +327,8 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = "🟢 Работает" if is_monitoring else "🔴 Остановлен"
     interval = _get_check_interval() if is_monitoring else CHECK_INTERVAL
-    now = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
-    hour = datetime.now().hour
+    now = datetime.now(BERLIN).strftime('%d.%m.%Y %H:%M:%S')
+    hour = datetime.now(BERLIN).hour
     if hour >= 22 or hour < 7:
         mode = "🌙 Ночной (30 мин)"
     elif hour < 9:
