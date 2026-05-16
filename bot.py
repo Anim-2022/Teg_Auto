@@ -7,7 +7,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.constants import ParseMode
 
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CHECK_INTERVAL, TARGET_URL
-from checker import check_available_dates
+from checker import check_available_dates, screenshot_calendar, cleanup_screenshot
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,7 @@ monitoring_task: asyncio.Task | None = None
 is_monitoring = False
 check_count = 0
 last_check_time: str = "—"
+last_found_dates: set = set()  # avoid duplicate alerts
 
 
 def format_dates_html(dates: list[dict]) -> str:
@@ -42,6 +43,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "даты для <b>Ersterteilung/Erweiterung</b> прав.\n\n"
         "📋 <b>Команды:</b>\n"
         "/check — разовая проверка\n"
+        "/calendar — 📸 скриншот календаря\n"
         "/monitor — запустить мониторинг\n"
         "/stop — остановить мониторинг\n"
         "/status — текущее состояние\n"
@@ -69,6 +71,29 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("📸 Делаю скриншот календаря...")
+
+    result = await screenshot_calendar()
+
+    if result["error"]:
+        await msg.edit_text(f"❌ Ошибка: {result['error']}")
+        return
+
+    try:
+        with open(result["path"], "rb") as photo:
+            now = datetime.now().strftime('%d.%m.%Y %H:%M')
+            await update.message.reply_photo(
+                photo=photo,
+                caption=f"📅 Календарь на {now}",
+            )
+        await msg.delete()
+    except Exception as e:
+        await msg.edit_text(f"❌ Не удалось отправить фото: {e}")
+    finally:
+        cleanup_screenshot()
+
+
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔍 Проверяю сайт...")
 
@@ -94,8 +119,30 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+def _get_check_interval() -> int:
+    """Smart interval: aggressive in the morning, normal during day, paused at night."""
+    now = datetime.now()
+    hour = now.hour
+    weekday = now.weekday()  # 0=Mon
+
+    # Night 22:00-06:59 → skip (check every 30 min just in case)
+    if hour >= 22 or hour < 7:
+        return 1800
+
+    # Mon 7:00-8:30 → every 60 sec (prime time for new slots)
+    if weekday == 0 and 7 <= hour < 9:
+        return 60
+
+    # Weekday mornings 7:00-8:30 → every 90 sec (daily slots drop)
+    if hour < 9:
+        return 90
+
+    # Normal daytime → use configured interval
+    return CHECK_INTERVAL
+
+
 async def monitor_loop(app: Application):
-    global is_monitoring, check_count, last_check_time
+    global is_monitoring, check_count, last_check_time, last_found_dates
     chat_id = TELEGRAM_CHAT_ID
 
     while is_monitoring:
@@ -105,33 +152,46 @@ async def monitor_loop(app: Application):
             last_check_time = datetime.now().strftime("%H:%M:%S")
 
             if result["available_dates"]:
-                dates_text = format_dates_html(result["available_dates"])
-                n = len(result["available_dates"])
-                now_str = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
-                await app.bot.send_message(
-                    chat_id=chat_id,
-                    text=(
-                        f"🚨🚨🚨 <b>ТЕРМИН НАЙДЕН!</b> 🚨🚨🚨\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"Найдено дат: <b>{n}</b>\n"
-                        f"{dates_text}\n\n"
-                        f"⏰ {now_str}\n\n"
-                        f"👇 <b>ЗАПИСЫВАЙСЯ НЕМЕДЛЕННО:</b>\n"
-                        f"🔗 <a href='{TARGET_URL}'>Открыть сайт записи</a>"
-                    ),
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                )
-                logger.info("ALERT SENT! %d dates found", n)
-            elif result["error"]:
-                logger.warning("Check error: %s", result["error"])
+                # Build set of current dates to detect new ones
+                current_dates = {f"{d['day']}.{d['month']}" for d in result["available_dates"]}
+                new_dates = current_dates - last_found_dates
+
+                if new_dates:
+                    # New dates appeared → send alert
+                    last_found_dates = current_dates
+                    dates_text = format_dates_html(result["available_dates"])
+                    n = len(result["available_dates"])
+                    now_str = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+                    await app.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            f"🚨🚨🚨 <b>ТЕРМИН НАЙДЕН!</b> 🚨🚨🚨\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"Найдено дат: <b>{n}</b>\n"
+                            f"{dates_text}\n\n"
+                            f"⏰ {now_str}\n\n"
+                            f"👇 <b>ЗАПИСЫВАЙСЯ НЕМЕДЛЕННО:</b>\n"
+                            f"🔗 <a href='{TARGET_URL}'>Открыть сайт записи</a>"
+                        ),
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    )
+                    logger.info("ALERT SENT! %d dates (%d new)", n, len(new_dates))
+                else:
+                    logger.info("Same dates still available, no new alert")
             else:
-                logger.info("No dates [check #%d at %s]", check_count, last_check_time)
+                if last_found_dates:
+                    last_found_dates.clear()  # reset when dates disappear
+                if result["error"]:
+                    logger.warning("Check error: %s", result["error"])
+                else:
+                    logger.info("No dates [check #%d at %s]", check_count, last_check_time)
 
         except Exception as e:
             logger.error("Monitor error: %s", e, exc_info=True)
 
-        await asyncio.sleep(CHECK_INTERVAL)
+        interval = _get_check_interval()
+        await asyncio.sleep(interval)
 
 
 async def cmd_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -182,13 +242,21 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = "🟢 Работает" if is_monitoring else "🔴 Остановлен"
-    interval_min = CHECK_INTERVAL // 60
+    interval = _get_check_interval() if is_monitoring else CHECK_INTERVAL
     now = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+    hour = datetime.now().hour
+    if hour >= 22 or hour < 7:
+        mode = "🌙 Ночной (30 мин)"
+    elif hour < 9:
+        mode = "⚡ Утренний (60-90 сек)"
+    else:
+        mode = "☀️ Дневной (3 мин)"
     await update.message.reply_text(
         f"📊 <b>Статус бота</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"Мониторинг: {state}\n"
-        f"Интервал: {interval_min} мин\n"
+        f"Режим: {mode}\n"
+        f"Интервал: {interval} сек\n"
         f"Проверок: {check_count}\n"
         f"Последняя: {last_check_time}\n"
         f"Время: {now}",
@@ -200,6 +268,7 @@ def create_bot() -> Application:
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("check", cmd_check))
+    app.add_handler(CommandHandler("calendar", cmd_calendar))
     app.add_handler(CommandHandler("monitor", cmd_monitor))
     app.add_handler(CommandHandler("stop", cmd_stop))
     app.add_handler(CommandHandler("status", cmd_status))
