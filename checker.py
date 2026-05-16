@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import os
+import traceback
+import time
 from playwright.async_api import async_playwright, Page, Frame, TimeoutError as PlaywrightTimeout
 
 from config import TARGET_URL, HEADLESS, TIMEOUT
@@ -10,38 +12,83 @@ logger = logging.getLogger(__name__)
 
 async def _navigate_to_calendar(page: Page) -> Frame | None:
     """Navigate through the form to the calendar page. Returns the iframe Frame or None."""
-    # Cookie consent
+    step = "cookie_consent"
     try:
-        cookie_btn = page.locator("text=Das ist ok")
-        if await cookie_btn.is_visible(timeout=3000):
-            await cookie_btn.click()
-            await page.wait_for_timeout(1000)
-    except Exception:
-        pass
+        # Step 1: Cookie consent
+        try:
+            cookie_btn = page.locator("text=Das ist ok")
+            if await cookie_btn.is_visible(timeout=3000):
+                await cookie_btn.click()
+                await page.wait_for_timeout(1000)
+                logger.info("[nav] Cookie consent accepted")
+            else:
+                logger.info("[nav] No cookie banner found")
+        except Exception as e:
+            logger.info("[nav] Cookie consent skipped: %s", e)
 
-    # Find tempus-termine iframe
-    frame = None
-    for f in page.frames:
-        if "tempus-termine.com" in (f.url or ""):
-            frame = f
-            break
-    if not frame:
+        # Step 2: Find tempus-termine iframe
+        step = "find_iframe"
+        frame = None
+        all_frames = page.frames
+        logger.info("[nav] Total frames on page: %d", len(all_frames))
+        for f in all_frames:
+            logger.debug("[nav]   frame url: %s", f.url)
+            if "tempus-termine.com" in (f.url or ""):
+                frame = f
+                break
+        if not frame:
+            logger.error("[nav] FAIL: tempus-termine iframe NOT found. Frame URLs: %s",
+                         [f.url for f in all_frames])
+            return None
+        logger.info("[nav] Found iframe: %s", frame.url)
+
+        # Step 3: Select service
+        step = "select_service"
+        select_el = frame.locator("#ErtErw-788-mittermin")
+        if await select_el.count() == 0:
+            logger.error("[nav] FAIL: #ErtErw-788-mittermin not found in iframe")
+            return None
+        await select_el.select_option("1")
+        await page.wait_for_timeout(500)
+        logger.info("[nav] Service selected (ErtErw=1)")
+
+        # Step 4: Check privacy checkbox
+        step = "check_privacy"
+        checkbox = frame.locator("#chkDatenschutz")
+        if await checkbox.count() == 0:
+            logger.error("[nav] FAIL: #chkDatenschutz not found in iframe")
+            return None
+        await checkbox.check()
+        await page.wait_for_timeout(500)
+        logger.info("[nav] Privacy checkbox checked")
+
+        # Step 5: Submit form
+        step = "submit_form"
+        submit_btn = frame.locator("input[type='submit'][value='Weiter zur Terminauswahl »']")
+        if await submit_btn.count() == 0:
+            logger.error("[nav] FAIL: Submit button not found in iframe")
+            return None
+        await submit_btn.click()
+        logger.info("[nav] Form submitted, waiting 5s for calendar...")
+        await page.wait_for_timeout(5000)
+
+        # Step 6: Re-find iframe after navigation
+        step = "refind_iframe"
+        for f in page.frames:
+            if "tempus-termine.com" in (f.url or ""):
+                logger.info("[nav] SUCCESS: Calendar iframe found after submit: %s", f.url)
+                return f
+
+        logger.error("[nav] FAIL: iframe lost after form submit. Frames: %s",
+                     [f.url for f in page.frames])
         return None
 
-    # Select service + privacy + submit
-    await frame.locator("#ErtErw-788-mittermin").select_option("1")
-    await page.wait_for_timeout(500)
-    await frame.locator("#chkDatenschutz").check()
-    await page.wait_for_timeout(500)
-    await frame.locator("input[type='submit'][value='Weiter zur Terminauswahl »']").click()
-    logger.info("Form submitted, waiting for calendar...")
-    await page.wait_for_timeout(5000)
-
-    # Re-find iframe after navigation
-    for f in page.frames:
-        if "tempus-termine.com" in (f.url or ""):
-            return f
-    return None
+    except PlaywrightTimeout as e:
+        logger.error("[nav] TIMEOUT at step '%s': %s", step, e)
+        raise
+    except Exception as e:
+        logger.error("[nav] ERROR at step '%s': %s\n%s", step, e, traceback.format_exc())
+        raise
 
 
 async def _parse_dates(frame: Frame) -> list[dict]:
@@ -49,12 +96,23 @@ async def _parse_dates(frame: Frame) -> list[dict]:
     available = []
     cal_tables = frame.locator("table.cal")
     table_count = await cal_tables.count()
+    logger.info("[parse] Found %d calendar tables", table_count)
+
+    if table_count == 0:
+        # Debug: log what's in the frame
+        body_html = await frame.locator("body").inner_text()
+        logger.warning("[parse] No table.cal found. Body text (first 500): %s", body_html[:500])
 
     for t in range(table_count):
         table = cal_tables.nth(t)
-        month_label = (await table.locator("th.monatslabel").inner_text()).strip()
+        month_el = table.locator("th.monatslabel")
+        if await month_el.count() == 0:
+            logger.warning("[parse] Table %d has no th.monatslabel", t)
+            continue
+        month_label = (await month_el.inner_text()).strip()
         links = table.locator("td a")
         count = await links.count()
+        logger.info("[parse] %s: %d links", month_label, count)
         for i in range(count):
             link = links.nth(i)
             text = (await link.inner_text()).strip()
@@ -66,6 +124,8 @@ async def _parse_dates(frame: Frame) -> list[dict]:
                 elif href.startswith("http"):
                     full_link = href
                 available.append({"day": text, "month": month_label, "link": full_link})
+
+    logger.info("[parse] Total available dates: %d", len(available))
     return available
 
 
@@ -73,9 +133,13 @@ async def _run_with_browser(callback):
     """Run a callback with a Playwright browser, handling cleanup safely."""
     pw = None
     browser = None
+    t0 = time.monotonic()
     try:
+        logger.info("[browser] Starting Playwright...")
         pw = await async_playwright().start()
+        logger.info("[browser] Launching Chromium (headless=%s)...", HEADLESS)
         browser = await pw.chromium.launch(headless=HEADLESS)
+        logger.info("[browser] Chromium launched in %.1fs", time.monotonic() - t0)
         context = await browser.new_context(
             locale="de-DE",
             viewport={"width": 1200, "height": 900},
@@ -87,7 +151,9 @@ async def _run_with_browser(callback):
         )
         page = await context.new_page()
         page.set_default_timeout(TIMEOUT)
-        return await callback(page)
+        result = await callback(page)
+        logger.info("[browser] Callback done in %.1fs total", time.monotonic() - t0)
+        return result
     finally:
         if browser:
             try:
@@ -99,6 +165,7 @@ async def _run_with_browser(callback):
                 await pw.stop()
             except Exception:
                 pass
+        logger.info("[browser] Cleanup done (%.1fs total)", time.monotonic() - t0)
 
 
 async def check_available_dates() -> dict:
@@ -106,29 +173,30 @@ async def check_available_dates() -> dict:
     result = {"available_dates": [], "error": None}
 
     async def _do_check(page):
-        logger.info("Opening %s", TARGET_URL)
+        logger.info("[check] Opening %s", TARGET_URL)
         await page.goto(TARGET_URL, wait_until="networkidle")
+        logger.info("[check] Page loaded, navigating to calendar...")
 
         frame = await _navigate_to_calendar(page)
         if not frame:
-            result["error"] = "Не удалось открыть календарь"
+            result["error"] = "Не удалось открыть календарь (iframe или форма не найдены)"
             return result
 
         result["available_dates"] = await _parse_dates(frame)
         if result["available_dates"]:
-            logger.info("Found %d available slots!", len(result["available_dates"]))
+            logger.info("[check] FOUND %d available slots!", len(result["available_dates"]))
         else:
-            logger.info("No available dates")
+            logger.info("[check] No available dates")
         return result
 
     try:
         return await _run_with_browser(_do_check)
     except PlaywrightTimeout as e:
-        result["error"] = f"Таймаут: {e}"
-        logger.error("Timeout: %s", e)
+        result["error"] = f"Таймаут при загрузке: {e}"
+        logger.error("[check] TIMEOUT: %s", e)
     except Exception as e:
-        result["error"] = f"Ошибка: {e}"
-        logger.error("Error: %s", e, exc_info=True)
+        result["error"] = f"Ошибка: {type(e).__name__}: {e}"
+        logger.error("[check] EXCEPTION: %s", e, exc_info=True)
     return result
 
 
@@ -140,29 +208,41 @@ async def screenshot_calendar() -> dict:
     result = {"path": None, "error": None}
 
     async def _do_screenshot(page):
+        logger.info("[screenshot] Opening %s", TARGET_URL)
         await page.goto(TARGET_URL, wait_until="networkidle")
+        logger.info("[screenshot] Page loaded, navigating to calendar...")
 
         frame = await _navigate_to_calendar(page)
         if not frame:
-            result["error"] = "Не удалось открыть календарь"
+            result["error"] = "Не удалось открыть календарь (iframe или форма не найдены)"
             return result
 
+        logger.info("[screenshot] Looking for #menu_container...")
         calendar_el = frame.locator("#menu_container")
         if await calendar_el.count() == 0:
+            logger.warning("[screenshot] #menu_container not found, trying #body_container")
             calendar_el = frame.locator("#body_container")
+            if await calendar_el.count() == 0:
+                logger.error("[screenshot] Neither #menu_container nor #body_container found")
+                # Fallback: screenshot entire frame
+                logger.info("[screenshot] Falling back to full page screenshot")
+                await page.screenshot(path=SCREENSHOT_PATH, full_page=True)
+                result["path"] = SCREENSHOT_PATH
+                return result
 
         await calendar_el.screenshot(path=SCREENSHOT_PATH)
         result["path"] = SCREENSHOT_PATH
-        logger.info("Calendar screenshot saved")
+        logger.info("[screenshot] Saved to %s", SCREENSHOT_PATH)
         return result
 
     try:
         return await _run_with_browser(_do_screenshot)
     except PlaywrightTimeout as e:
-        result["error"] = f"Таймаут: {e}"
+        result["error"] = f"Таймаут: {type(e).__name__}: {e}"
+        logger.error("[screenshot] TIMEOUT: %s", e)
     except Exception as e:
-        result["error"] = f"Ошибка: {e}"
-        logger.error("Screenshot error: %s", e, exc_info=True)
+        result["error"] = f"Ошибка: {type(e).__name__}: {e}"
+        logger.error("[screenshot] EXCEPTION: %s", e, exc_info=True)
     return result
 
 

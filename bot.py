@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import logging.handlers
+from collections import deque
 from datetime import datetime
 
 from telegram import Update
@@ -10,6 +12,26 @@ from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CHECK_INTERVAL, TARGET_
 from checker import check_available_dates, screenshot_calendar, cleanup_screenshot
 
 logger = logging.getLogger(__name__)
+
+# In-memory log buffer for /logs command
+_log_buffer: deque = deque(maxlen=200)
+
+
+class _BufferHandler(logging.Handler):
+    """Pushes formatted log records into _log_buffer."""
+    def emit(self, record):
+        try:
+            _log_buffer.append(self.format(record))
+        except Exception:
+            pass
+
+
+def setup_log_buffer():
+    """Attach a memory handler to the root logger so /logs can read recent entries."""
+    handler = _BufferHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"))
+    handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(handler)
 
 # State
 monitoring_task: asyncio.Task | None = None
@@ -48,7 +70,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/monitor — запустить мониторинг\n"
         "/stop — остановить мониторинг\n"
         "/status — текущее состояние\n"
-        "/info — как работает бот\n\n"
+        "/info — как работает бот\n"
+        "/logs — последние логи (отладка)\n\n"
         "💡 <i>Новые термины появляются ПН с 7:30</i>",
         parse_mode=ParseMode.HTML,
     )
@@ -74,11 +97,22 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("📸 Делаю скриншот календаря...")
+    logger.info("[cmd] /calendar from user %s", update.effective_user.id)
 
-    result = await screenshot_calendar()
+    try:
+        result = await screenshot_calendar()
+    except Exception as e:
+        logger.error("[cmd] /calendar crashed: %s", e, exc_info=True)
+        await msg.edit_text(f"❌ Крах: {type(e).__name__}: {e}")
+        return
 
     if result["error"]:
-        await msg.edit_text(f"❌ Ошибка: {result['error']}")
+        logger.warning("[cmd] /calendar error: %s", result["error"])
+        await msg.edit_text(f"❌ Ошибка скриншота:\n<code>{result['error']}</code>", parse_mode=ParseMode.HTML)
+        return
+
+    if not result["path"]:
+        await msg.edit_text("❌ Скриншот не создан (path=None)")
         return
 
     try:
@@ -90,18 +124,25 @@ async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         await msg.delete()
     except Exception as e:
-        await msg.edit_text(f"❌ Не удалось отправить фото: {e}")
+        logger.error("[cmd] /calendar send photo error: %s", e, exc_info=True)
+        await msg.edit_text(f"❌ Не удалось отправить фото:\n<code>{type(e).__name__}: {e}</code>", parse_mode=ParseMode.HTML)
     finally:
         cleanup_screenshot()
 
 
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔍 Проверяю сайт...")
+    logger.info("[cmd] /check from user %s", update.effective_user.id)
 
-    result = await check_available_dates()
+    try:
+        result = await check_available_dates()
+    except Exception as e:
+        logger.error("[cmd] /check crashed: %s", e, exc_info=True)
+        await msg.edit_text(f"❌ Крах: {type(e).__name__}: {e}")
+        return
 
     if result["error"]:
-        await msg.edit_text(f"❌ Ошибка: {result['error']}")
+        await msg.edit_text(f"❌ Ошибка:\n<code>{result['error']}</code>", parse_mode=ParseMode.HTML)
     elif result["available_dates"]:
         dates_text = format_dates_html(result["available_dates"])
         await msg.edit_text(
@@ -271,6 +312,23 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show recent log entries for debugging."""
+    logger.info("[cmd] /logs from user %s", update.effective_user.id)
+
+    if _log_buffer:
+        lines = list(_log_buffer)
+        text = "\n".join(lines[-40:])  # last 40 lines
+        if len(text) > 4000:
+            text = text[-4000:]
+        await update.message.reply_text(
+            f"📋 <b>Последние логи ({len(lines)} всего):</b>\n\n<pre>{text}</pre>",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await update.message.reply_text("📋 Логов пока нет")
+
+
 async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Suppress 409 Conflict errors during deploy transitions."""
     from telegram.error import Conflict
@@ -281,6 +339,7 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 
 def create_bot() -> Application:
+    setup_log_buffer()
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("check", cmd_check))
@@ -289,5 +348,6 @@ def create_bot() -> Application:
     app.add_handler(CommandHandler("stop", cmd_stop))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("info", cmd_info))
+    app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_error_handler(_error_handler)
     return app
