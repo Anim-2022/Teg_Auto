@@ -18,17 +18,17 @@ check_count = 0
 last_check_time: str = "—"
 
 
-def format_dates(dates: list[dict]) -> str:
-    """Format available dates for Telegram message."""
+def format_dates_html(dates: list[dict]) -> str:
+    """Format available dates for Telegram (HTML)."""
     lines = []
     current_month = ""
     for d in dates:
         if d["month"] != current_month:
             current_month = d["month"]
-            lines.append(f"\n📅 *{current_month}*")
+            lines.append(f"\n📅 <b>{current_month}</b>")
         day = d["day"]
         if d["link"]:
-            lines.append(f"  • [{day} число]({d['link']})")
+            lines.append(f"  • <a href='{d['link']}'>{day} число</a>")
         else:
             lines.append(f"  • {day} число")
     return "\n".join(lines)
@@ -36,36 +36,36 @@ def format_dates(dates: list[dict]) -> str:
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚗 *Монитор записи на права — Gelsenkirchen*\n"
+        "🚗 <b>Монитор записи на права — Gelsenkirchen</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
         "Бот проверяет сайт Führerscheinstelle на свободные\n"
-        "даты для *Ersterteilung/Erweiterung* прав\\.\n\n"
-        "📋 *Команды:*\n"
+        "даты для <b>Ersterteilung/Erweiterung</b> прав.\n\n"
+        "📋 <b>Команды:</b>\n"
         "/check — разовая проверка\n"
         "/monitor — запустить мониторинг\n"
         "/stop — остановить мониторинг\n"
         "/status — текущее состояние\n"
         "/info — как работает бот\n\n"
-        "💡 _Новые термины появляются ПН с 7:30_",
-        parse_mode=ParseMode.MARKDOWN_V2,
+        "💡 <i>Новые термины появляются ПН с 7:30</i>",
+        parse_mode=ParseMode.HTML,
     )
 
 
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "ℹ️ *Как работает бот:*\n\n"
-        "1\\. Открывает сайт через headless\\-браузер\n"
-        "2\\. Выбирает услугу «Ersterteilung/Erweiterung»\n"
-        "3\\. Принимает Datenschutz, жмёт «Weiter»\n"
-        "4\\. Сканирует календарь на свободные даты\n"
-        "5\\. Если есть — присылает уведомление со ссылкой\n\n"
-        "🔗 *Прямая ссылка для записи:*\n"
+        "ℹ️ <b>Как работает бот:</b>\n\n"
+        "1. Открывает сайт через headless-браузер\n"
+        "2. Выбирает услугу «Ersterteilung/Erweiterung»\n"
+        "3. Принимает Datenschutz, жмёт «Weiter»\n"
+        "4. Сканирует календарь на свободные даты\n"
+        "5. Если есть — присылает уведомление со ссылкой\n\n"
+        "🔗 <b>Прямая ссылка для записи:</b>\n"
         "Когда бот находит свободную дату, он даёт ссылку\n"
-        "которая ведёт на страницу выбора времени\\.\n"
-        "Там нужно выбрать время и ввести данные\\.\n\n"
-        "⚠️ *Ссылка работает ограниченное время\\!*\n"
-        "Бронируйте сразу после уведомления\\.",
-        parse_mode=ParseMode.MARKDOWN_V2,
+        "которая ведёт на страницу выбора времени.\n"
+        "Там нужно выбрать время и ввести данные.\n\n"
+        "⚠️ <b>Ссылка работает ограниченное время!</b>\n"
+        "Бронируйте сразу после уведомления.",
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -77,19 +77,20 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if result["error"]:
         await msg.edit_text(f"❌ Ошибка: {result['error']}")
     elif result["available_dates"]:
-        dates_text = format_dates(result["available_dates"])
+        dates_text = format_dates_html(result["available_dates"])
         await msg.edit_text(
-            f"🟢 *ЕСТЬ СВОБОДНЫЕ ДАТЫ\\!*\n"
+            f"🟢 <b>ЕСТЬ СВОБОДНЫЕ ДАТЫ!</b>\n"
             f"{dates_text}\n\n"
-            f"🔗 [Записаться сейчас]({TARGET_URL})",
-            parse_mode=ParseMode.MARKDOWN_V2,
+            f"🔗 <a href='{TARGET_URL}'>Записаться сейчас</a>",
+            parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         )
     else:
+        now = datetime.now().strftime('%H:%M:%S')
         await msg.edit_text(
-            "🔴 Свободных дат нет\n\n"
-            f"⏰ Проверено: {datetime.now().strftime('%H:%M:%S')}\n"
-            "Используй /monitor для автоматической проверки"
+            f"🔴 Свободных дат нет\n\n"
+            f"⏰ Проверено: {now}\n"
+            f"Используй /monitor для автоматической проверки"
         )
 
 
@@ -104,20 +105,21 @@ async def monitor_loop(app: Application):
             last_check_time = datetime.now().strftime("%H:%M:%S")
 
             if result["available_dates"]:
-                dates_text = format_dates(result["available_dates"])
+                dates_text = format_dates_html(result["available_dates"])
                 n = len(result["available_dates"])
+                now_str = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
                 await app.bot.send_message(
                     chat_id=chat_id,
                     text=(
-                        f"🚨🚨🚨 *ТЕРМИН НАЙДЕН\\!* 🚨🚨🚨\n"
+                        f"🚨🚨🚨 <b>ТЕРМИН НАЙДЕН!</b> 🚨🚨🚨\n"
                         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"Найдено дат: *{n}*\n"
+                        f"Найдено дат: <b>{n}</b>\n"
                         f"{dates_text}\n\n"
-                        f"⏰ {datetime.now().strftime('%d\\.%m\\.%Y %H:%M:%S')}\n\n"
-                        f"👇 *ЗАПИСЫВАЙСЯ НЕМЕДЛЕННО:*\n"
-                        f"🔗 [Открыть сайт записи]({TARGET_URL})"
+                        f"⏰ {now_str}\n\n"
+                        f"👇 <b>ЗАПИСЫВАЙСЯ НЕМЕДЛЕННО:</b>\n"
+                        f"🔗 <a href='{TARGET_URL}'>Открыть сайт записи</a>"
                     ),
-                    parse_mode=ParseMode.MARKDOWN_V2,
+                    parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True,
                 )
                 logger.info("ALERT SENT! %d dates found", n)
@@ -150,13 +152,13 @@ async def cmd_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     interval_min = CHECK_INTERVAL // 60
     await update.message.reply_text(
-        f"✅ *Мониторинг запущен\\!*\n\n"
+        f"✅ <b>Мониторинг запущен!</b>\n\n"
         f"⏱ Интервал: каждые {interval_min} мин\n"
         f"🎯 Услуга: Ersterteilung/Erweiterung\n"
-        f"📍 Gelsenkirchen, Wildenbruchstr\\. 10\n\n"
-        f"Пришлю уведомление как только появится дата\\.\n"
+        f"📍 Gelsenkirchen, Wildenbruchstr. 10\n\n"
+        f"Пришлю уведомление как только появится дата.\n"
         f"Для остановки: /stop",
-        parse_mode=ParseMode.MARKDOWN_V2,
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -181,15 +183,16 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = "🟢 Работает" if is_monitoring else "🔴 Остановлен"
     interval_min = CHECK_INTERVAL // 60
+    now = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
     await update.message.reply_text(
-        f"📊 *Статус бота*\n"
+        f"📊 <b>Статус бота</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"Мониторинг: {state}\n"
         f"Интервал: {interval_min} мин\n"
         f"Проверок: {check_count}\n"
         f"Последняя: {last_check_time}\n"
-        f"Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}",
-        parse_mode="Markdown",
+        f"Время: {now}",
+        parse_mode=ParseMode.HTML,
     )
 
 

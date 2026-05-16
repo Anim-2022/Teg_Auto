@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from bot import create_bot, cmd_monitor
+from bot import create_bot
 from config import TELEGRAM_CHAT_ID, CHECK_INTERVAL
 
 logging.basicConfig(
