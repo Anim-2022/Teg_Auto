@@ -4,8 +4,8 @@ import logging.handlers
 from collections import deque
 from datetime import datetime
 
-from telegram import BotCommand, Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 from telegram.constants import ParseMode
 
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CHECK_INTERVAL, TARGET_URL
@@ -40,6 +40,19 @@ check_count = 0
 error_count = 0
 last_check_time: str = "—"
 last_found_dates: set = set()  # avoid duplicate alerts
+
+
+CLOSE_KB = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Закрыть", callback_data="close")]])
+
+
+async def callback_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Delete message when user clicks Close button."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
 
 
 def format_dates_html(dates: list[dict]) -> str:
@@ -92,6 +105,7 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚠️ <b>Ссылка работает ограниченное время!</b>\n"
         "Бронируйте сразу после уведомления.",
         parse_mode=ParseMode.HTML,
+        reply_markup=CLOSE_KB,
     )
 
 
@@ -160,7 +174,7 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if result["error"]:
-        await msg.edit_text(f"❌ Ошибка:\n<code>{result['error']}</code>", parse_mode=ParseMode.HTML)
+        await msg.edit_text(f"❌ Ошибка:\n<code>{result['error']}</code>", parse_mode=ParseMode.HTML, reply_markup=CLOSE_KB)
     elif result["available_dates"]:
         dates_text = format_dates_html(result["available_dates"])
         await msg.edit_text(
@@ -169,13 +183,15 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔗 <a href='{TARGET_URL}'>Записаться сейчас</a>",
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
+            reply_markup=CLOSE_KB,
         )
     else:
         now = datetime.now().strftime('%H:%M:%S')
         await msg.edit_text(
             f"🔴 Свободных дат нет\n\n"
             f"⏰ Проверено: {now}\n"
-            f"Используй /monitor для автоматической проверки"
+            f"Используй /monitor для автоматической проверки",
+            reply_markup=CLOSE_KB,
         )
 
 
@@ -327,6 +343,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Последняя: {last_check_time}\n"
         f"Время: {now}",
         parse_mode=ParseMode.HTML,
+        reply_markup=CLOSE_KB,
     )
 
 
@@ -342,9 +359,10 @@ async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"📋 <b>Последние логи ({len(lines)} всего):</b>\n\n<pre>{text}</pre>",
             parse_mode=ParseMode.HTML,
+            reply_markup=CLOSE_KB,
         )
     else:
-        await update.message.reply_text("📋 Логов пока нет")
+        await update.message.reply_text("📋 Логов пока нет", reply_markup=CLOSE_KB)
 
 
 async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -378,5 +396,6 @@ def create_bot() -> Application:
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("info", cmd_info))
     app.add_handler(CommandHandler("logs", cmd_logs))
+    app.add_handler(CallbackQueryHandler(callback_close, pattern="^close$"))
     app.add_error_handler(_error_handler)
     return app
