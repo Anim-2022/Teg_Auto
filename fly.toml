@@ -13,6 +13,10 @@ primary_region = 'fra'
 
 # No [http_service] — this is a polling bot, not a web server
 
+# Explicit process keeps machine alive as long as the script runs
+[processes]
+  app = "python main.py"
+
 [[vm]]
   memory = '2gb'
   cpu_kind = 'shared'
