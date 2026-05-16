@@ -113,8 +113,17 @@ async def _run_with_browser(callback):
         logger.info("[browser] Starting Playwright...")
         pw = await async_playwright().start()
         logger.info("[browser] Launching Chromium (headless=%s)...", HEADLESS)
-        browser = await pw.chromium.launch(headless=HEADLESS)
+        browser = await pw.chromium.launch(
+            headless=HEADLESS,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--single-process",
+            ],
+        )
         logger.info("[browser] Chromium launched in %.1fs", time.monotonic() - t0)
+        logger.info("[browser] Creating context...")
         context = await browser.new_context(
             locale="de-DE",
             viewport={"width": 1200, "height": 900},
@@ -124,8 +133,10 @@ async def _run_with_browser(callback):
                 "Chrome/125.0.0.0 Safari/537.36"
             ),
         )
+        logger.info("[browser] Creating page...")
         page = await context.new_page()
         page.set_default_timeout(TIMEOUT)
+        logger.info("[browser] Page ready (%.1fs)", time.monotonic() - t0)
         result = await callback(page)
         logger.info("[browser] Callback done in %.1fs total", time.monotonic() - t0)
         return result
