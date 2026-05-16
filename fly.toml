@@ -1,13 +1,10 @@
-app = "termin-monitor-ge"
+app = "teg-auto"
 primary_region = "fra"
 
 [build]
 
 [env]
   PYTHONUNBUFFERED = "1"
-
-[processes]
-  bot = "python main.py"
 
 [[vm]]
   memory = "512mb"
