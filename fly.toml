@@ -1,4 +1,4 @@
-# fly.toml app configuration file generated for teg-auto on 2026-05-16T11:32:51Z
+# fly.toml app configuration file generated for teg-auto on 2026-05-16T12:37:20Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
@@ -14,7 +14,7 @@ primary_region = 'fra'
 # No [http_service] — this is a polling bot, not a web server
 
 [[vm]]
-  memory = '2gb'
+  memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
-  memory_mb = 2048
+  memory_mb = 1024
